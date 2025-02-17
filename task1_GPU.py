@@ -150,20 +150,14 @@ cProfile.run('profile_func()', 'profile_stats')
 stats = pstats.Stats('profile_stats')
 stats.sort_stats('cumtime').print_stats(20)
 
-def process_image(_):
-    if use_secrets:
-        random_field = generate_secret_random_complex_field()
-    else:
-        random_field = generate_random_complex_field()
-    field_1, error = retr_block(np.abs(random_field))
-    for _ in range(10):
-        field_1, error = retr_block(field_1)
-    print(error)
-    return field_1
-
-if __name__ == "__main__":
-    with Pool(processes=4) as pool:  
-        results = pool.map(process_image, range(10))
-    for field_1 in results:
-        show_2_images(np.abs(field_1), np.angle(field_1))
-
+error=1.
+for i in range(100):
+#while (error>0.0765):
+  if use_secrets:
+      random_field = generate_secret_random_complex_field()
+  else:
+      random_field = generate_random_complex_field()
+  field_1, error = retr_block(inp=np.abs(random_field))
+  for i in range (50):
+    field_1, error = retr_block(inp=field_1)
+  print(error)
