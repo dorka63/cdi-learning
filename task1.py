@@ -1,13 +1,9 @@
-# -*- coding: utf-8 -*-
-"""
-@author: nmurz
-"""
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
-import pyfftw
 from numba import njit,prange
 from multiprocessing import Pool
+import pyfftw
 import cProfile
 import pstats
 
@@ -17,6 +13,7 @@ try:
 except ImportError:
     import np.random
     use_secrets = False
+
 
 def show_2_images(data1, data2, title1="Modulo", title2="Phase", cmap1=None, cmap2=None):
     if isinstance(data1, np.ndarray) and isinstance(data2, np.ndarray) and data1.shape == data2.shape:
@@ -85,7 +82,6 @@ def generate_secret_random_complex_field(width=555, height=555):
             phases[i,j] = secrets.randbits(32) / 2**32 * 2 * np.pi
     rand_field = amplitudes * np.exp(1j * phases)
     return rand_field
-
 
 # Настройка pyFFTW
 pyfftw.interfaces.cache.enable()
@@ -165,6 +161,11 @@ def profile_func():
     show_2_images(np.abs(field_1), np.angle(field_1))
     print(error)
 
+cProfile.run('profile_func()', 'profile_stats')
+stats = pstats.Stats('profile_stats')
+stats.sort_stats('cumtime').print_stats(20)
+
+
 def process_image(_):
     if use_secrets:
         random_field = generate_secret_random_complex_field()
@@ -181,7 +182,3 @@ if __name__ == "__main__":
         results = pool.map(process_image, range(10))
     for field_1 in results:
         show_2_images(np.abs(field_1), np.angle(field_1))
-
-#cProfile.run('profile_func()', 'profile_stats')
-#stats = pstats.Stats('profile_stats')
-#stats.sort_stats('cumtime').print_stats(20)
