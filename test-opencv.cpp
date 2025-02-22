@@ -6,6 +6,7 @@
 #include <vector>
 #include <random>
 #include <opencv2/core/ocl.hpp>
+#include <omp.h>
 
 cv::Mat img_prep(const cv::Mat& image) {
     cv::Mat pixel_values(image.rows, image.cols, CV_32FC2);
@@ -41,14 +42,13 @@ cv::Mat generate_random_complex_field(int width = 555, int height = 555) {
     cv::Mat rand_field(height, width, CV_32FC2);
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_int_distribution<int> amplitude_dist(0, (1 << 24) - 1);
+    std::uniform_real_distribution<float> amplitude_dist(0.0, 16777215.0);
     std::uniform_real_distribution<float> phase_dist(0.0, 2.0 * M_PI);
     cv::setNumThreads(8);
     cv::parallel_for_(cv::Range(0, height), [&](const cv::Range& range) {
         for (int i = range.start; i < range.end; ++i) {
             for (int j = 0; j < width; ++j) {
-                int amplitude_int = amplitude_dist(gen);
-                float amplitude = static_cast<float>(amplitude_int);
+                float amplitude = amplitude_dist(gen);
                 float phase = phase_dist(gen);
                 float real_part = amplitude * std::cos(phase);
                 float imaginary_part = amplitude * std::sin(phase);
@@ -61,7 +61,7 @@ cv::Mat generate_random_complex_field(int width = 555, int height = 555) {
 }
 
 cv::UMat FT(const cv::Mat& data) {
-//    CV_Assert(data.type() == CV_32FC2);
+    CV_Assert(data.type() == CV_32FC2);
     cv::UMat u_data = data.getUMat(cv::ACCESS_READ);
     cv::UMat u_ftmatrix;
     cv::dft(u_data, u_ftmatrix);
@@ -69,7 +69,7 @@ cv::UMat FT(const cv::Mat& data) {
 }
 
 cv::UMat IFT(const cv::Mat& data) {
-//    CV_Assert(data.type() == CV_32FC2);
+    CV_Assert(data.type() == CV_32FC2);
     cv::UMat u_data = data.getUMat(cv::ACCESS_READ);
     cv::UMat u_iftmatrix;
     cv::idft(u_data, u_iftmatrix, cv::DFT_SCALE);
@@ -77,7 +77,7 @@ cv::UMat IFT(const cv::Mat& data) {
 }
 
 cv::Mat steps(const cv::Mat& X_inp, const cv::Mat& X_source) {
-//    CV_Assert(X_inp.type() == CV_32FC2 && X_source.type() == CV_32FC2);
+    CV_Assert(X_inp.type() == CV_32FC2 && X_source.type() == CV_32FC2);
     cv::UMat u_ft_X_inp = FT(X_inp);
     cv::Mat ft_X_inp;
     u_ft_X_inp.copyTo(ft_X_inp);
@@ -202,26 +202,26 @@ int main() {
 
     float error = 1.0f;
     cv::Mat field_1;
-    while (error > 0.078f) {
+    for (int j = 0; j < 5; ++j) {
         cv::Mat random_field = generate_random_complex_field();
 
         std::pair<cv::Mat, float> result = retr_block(random_field, 10, crypt_values, strict_mask, antimask);
         field_1 = result.first;
         error = result.second;
 
-        for (int i = 0; i < 8; ++i) {
+        for (int i = 0; i < 25; ++i) {
             cv::Mat abs_random_field;
-            cv::magnitude(random_field, cv::Mat::zeros(random_field.size(), CV_32FC2), abs_random_field);
-            std::pair<cv::Mat, float> new_result = retr_block(abs_random_field, 10, crypt_values, strict_mask, antimask);
+            cv::Mat plane[2];
+            cv::split(field_1, plane); // plane[0] — Re, plane[1] — Im
+            cv::magnitude(plane[0], plane[1], abs_random_field);
+            cv::Mat re_part, im_part;
+            cv::polarToCart(abs_random_field, cv::Mat::zeros(abs_random_field.size(), CV_32F), re_part, im_part);
+            cv::Mat new_abs_random_field;
+            cv::merge(std::vector<cv::Mat>{re_part, im_part}, new_abs_random_field);
+            std::pair<cv::Mat, float> new_result = retr_block(new_abs_random_field, 10, crypt_values, strict_mask, antimask);
             field_1 = new_result.first;
             error = new_result.second;
         }
-
-        cv::Mat abs_random_field;
-        cv::magnitude(random_field, cv::Mat::zeros(random_field.size(), CV_32FC2), abs_random_field);
-        std::pair<cv::Mat, float> final_result = retr_block(abs_random_field, 200, crypt_values, strict_mask, antimask);
-        field_1 = final_result.first;
-        error = final_result.second;
 
         std::cout << "Error: " << error << std::endl;
     }
