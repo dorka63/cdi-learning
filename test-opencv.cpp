@@ -8,16 +8,16 @@
 #include <cmath>
 
 cv::Mat img_prep(const cv::Mat& image) {
-    cv::Mat pixel_values(image.rows, image.cols, CV_64FC2);
+    cv::Mat pixel_values(image.rows, image.cols, CV_32FC2);
     for (int i = 0; i < image.rows; ++i) {
         for (int j = 0; j < image.cols; ++j) {
             cv::Vec3b pixel = image.at<cv::Vec3b>(i, j);
-            double value = pixel[2] + pixel[1] * 256 + pixel[0] * 256 * 256;
-            double imaginary_part = 0.0;
-            pixel_values.at<cv::Vec2d>(i, j) = cv::Vec2d(value, imaginary_part);
+            float value = pixel[2] + pixel[1] * 256 + pixel[0] * 256 * 256;
+            float imaginary_part = 0.0;
+            pixel_values.at<cv::Vec2f>(i, j) = cv::Vec2f(value, imaginary_part);
         }
     }
-    //CV_Assert(pixel_values.type() == CV_64FC2);
+    CV_Assert(pixel_values.type() == CV_32FC2);
     return pixel_values;
 }
 
@@ -38,41 +38,41 @@ void show_2_images(const cv::Mat& data1, const cv::Mat& data2, const std::string
 
 //Random complex field generation
 cv::Mat generate_random_complex_field(int width = 555, int height = 555) {
-    cv::Mat rand_field(height, width, CV_64FC2);
+    cv::Mat rand_field(height, width, CV_32FC2);
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<int> amplitude_dist(0, (1 << 24) - 1);
-    std::uniform_real_distribution<double> phase_dist(0.0, 2.0 * M_PI);
+    std::uniform_real_distribution<float> phase_dist(0.0, 2.0 * M_PI);
     for (int i = 0; i < height; ++i) {
         for (int j = 0; j < width; ++j) {
             int amplitude_int = amplitude_dist(gen);
-            double amplitude = static_cast<double>(amplitude_int);
-            double phase = phase_dist(gen);
-            double real_part = amplitude * std::cos(phase);
-            double imaginary_part = amplitude * std::sin(phase);
-            rand_field.at<cv::Vec2d>(i, j) = cv::Vec2d(real_part, imaginary_part);
+            float amplitude = static_cast<float>(amplitude_int);
+            float phase = phase_dist(gen);
+            float real_part = amplitude * std::cos(phase);
+            float imaginary_part = amplitude * std::sin(phase);
+            rand_field.at<cv::Vec2f>(i, j) = cv::Vec2f(real_part, imaginary_part);
         }
     }
-    //CV_Assert(rand_field.type() == CV_64FC2);
+    CV_Assert(rand_field.type() == CV_32FC2);
     return rand_field;
 }
 
 cv::Mat FT(const cv::Mat& data) {
-    CV_Assert(data.type() == CV_64FC2);
+    CV_Assert(data.type() == CV_32FC2);
     cv::Mat ftmatrix;
     cv::dft(data, ftmatrix);
     return ftmatrix;
 }
 
 cv::Mat IFT(const cv::Mat& data) {
-    CV_Assert(data.type() == CV_64FC2);
+    CV_Assert(data.type() == CV_32FC2);
     cv::Mat iftmatrix;
     cv::idft(data, iftmatrix, cv::DFT_SCALE);
     return iftmatrix;
 }
 
 cv::Mat steps(const cv::Mat& X_inp, const cv::Mat& X_source) {
-    CV_Assert(X_inp.type() == CV_64FC2 && X_source.type() == CV_64FC2);
+    CV_Assert(X_inp.type() == CV_32FC2 && X_source.type() == CV_32FC2);
     cv::Mat ft_X_inp = FT(X_inp);
     cv::Mat planes[2];
     cv::split(ft_X_inp, planes); // planes[0] — Re, planes[1] — Im
@@ -98,8 +98,8 @@ cv::Mat applyMaskToComplex(const cv::Mat& complexData, const cv::Mat& mask) {
     cv::Mat new_amplitude = amplitude.mul(mask);
     cv::Mat new_phase = phase.mul(mask);
     cv::Mat real_part, imag_part;
-    real_part.create(new_amplitude.size(), CV_64F);
-    imag_part.create(new_phase.size(), CV_64F); 
+    real_part.create(new_amplitude.size(), CV_32F);
+    imag_part.create(new_phase.size(), CV_32F); 
     cv::polarToCart(new_amplitude, new_phase, real_part, imag_part);
     cv::Mat result;
     cv::merge(std::vector<cv::Mat>{real_part, imag_part}, result);
@@ -113,8 +113,8 @@ std::pair<cv::Mat, float> ER(int N_iter, const cv::Mat& target, const cv::Mat& s
     float D_norm, A_norm, Error;
 
     for (int i = 0; i < N_iter; ++i) {
-        D = steps(A, source); // Шаговые вычисления
-        A = applyMaskToComplex(D, mask); // Применяем маску к амплитуде и фазе
+        D = steps(A, source); 
+        A = applyMaskToComplex(D, mask); 
         D_norm = cv::norm(D);
         A_norm = cv::norm(A);
         Error = std::sqrt(D_norm * D_norm - A_norm * A_norm) / D_norm;
@@ -127,16 +127,11 @@ cv::Mat HIO(int N_iter, float beta, const cv::Mat& Target, const cv::Mat& Source
     cv::Mat D;
 
     for (int i = 0; i < N_iter; ++i) {
-        D = steps(A, Source); // Шаговые вычисления
-
-        // Применяем маску и антимаску к амплитуде и фазе
-        cv::Mat masked_D = applyMaskToComplex(D, mask);
-        cv::Mat masked_A = applyMaskToComplex(A - beta * D, antimask);
-
-        // Обновляем A
-        A = masked_D + masked_A;
+        D = steps(A, Source);
+//        cv::Mat masked_D = applyMaskToComplex(D, mask);
+//        cv::Mat masked_A = applyMaskToComplex(A - beta * D, antimask);
+        A = applyMaskToComplex(D, mask) + applyMaskToComplex(A - beta * D, antimask);
     }
-
     return A;
 }
 std::pair<cv::Mat, float> retrieving(const cv::Mat& img, const cv::Mat& real_img, float beta, int N, const cv::Mat& mask, const cv::Mat& antimask) {
@@ -155,7 +150,7 @@ std::pair<cv::Mat, float> retr_block(const cv::Mat& inp, int N, const cv::Mat& c
 }
 
 int main() {
-    std::string img_path = "C:/Users/nmurz/Desktop/настя/МГУ/научка/opencv_test/test-opencv/crypt.jpg";
+    std::string img_path = "crypt.jpg";
     cv::Mat crypt = cv::imread(img_path, cv::IMREAD_COLOR);
 
     if (crypt.empty()) {
@@ -169,7 +164,7 @@ int main() {
     int half_size = size / 4;
 
     // mask
-    cv::Mat strict_mask = cv::Mat::zeros(size, size, CV_64F);
+    cv::Mat strict_mask = cv::Mat::zeros(size, size, CV_32F);
     int center_square_start = center - half_size;
     int center_square_end = center + half_size;
 
@@ -188,19 +183,17 @@ int main() {
         std::pair<cv::Mat, float> result = retr_block(random_field, 10, crypt_values, strict_mask, antimask);
         field_1 = result.first;
         error = result.second;
-        std::cout << "Error: " << error << std::endl;
 
         for (int i = 0; i < 8; ++i) {
             cv::Mat abs_random_field;
-            cv::magnitude(random_field, cv::Mat::zeros(random_field.size(), CV_64FC2), abs_random_field);
+            cv::magnitude(random_field, cv::Mat::zeros(random_field.size(), CV_32FC2), abs_random_field);
             std::pair<cv::Mat, float> new_result = retr_block(abs_random_field, 10, crypt_values, strict_mask, antimask);
             field_1 = new_result.first;
             error = new_result.second;
-            std::cout << "Error: " << error << std::endl;
         }
 
         cv::Mat abs_random_field;
-        cv::magnitude(random_field, cv::Mat::zeros(random_field.size(), CV_64FC2), abs_random_field);
+        cv::magnitude(random_field, cv::Mat::zeros(random_field.size(), CV_32FC2), abs_random_field);
         std::pair<cv::Mat, float> final_result = retr_block(abs_random_field, 200, crypt_values, strict_mask, antimask);
         field_1 = final_result.first;
         error = final_result.second;
@@ -208,13 +201,14 @@ int main() {
         std::cout << "Error: " << error << std::endl;
     }
 
-    // Отображение результатов
+    
     cv::Mat abs_field, phase_field;
     cv::Mat planes[2];
     cv::split(field_1, planes);
-    cv::magnitude(planes[0], planes[1], abs_field); // Модуль
-    cv::phase(planes[0], planes[1], phase_field);  // Фаза
-
+    cv::magnitude(planes[0], planes[1], abs_field); 
+    cv::phase(planes[0], planes[1], phase_field);  
+    cv::normalize(abs_field, abs_field, 0, 255, cv::NORM_MINMAX, CV_8U);
+    cv::normalize(phase_field, phase_field, 0, 255, cv::NORM_MINMAX, CV_8U);
     show_2_images(abs_field, phase_field, "Modulo", "Phase");
 
     return 0;
