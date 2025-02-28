@@ -112,6 +112,7 @@ def HIO(N_iter: int, beta: float, Target, Source):
         A = mask * D + antimask * (A - beta * D)  # r-domain
     return A
 
+
 #from the task (30 HIO +10 ER)
 def retrieving(img, real_img, beta):
     #real_img is the r-domain field for the HIO's 0th iteration, img --- "true" reciporal magnitude
@@ -120,6 +121,12 @@ def retrieving(img, real_img, beta):
     c_er,err = ER(10, target=c_hio, source=img)
     #c_er = ER(10, target=c_hio, source=img)
     return [c_er,err]
+
+# This algorithm is taken from the work:
+# Artyukov, I.A., Vinogradov, A.V., Gorbunkov, M.V. et al.
+# Virtual Lens Method for Near-Field Phase Retrieval. 
+# Bull. Lebedev Phys. Inst. 50, 414–419 (2023).
+# https://doi.org/10.3103/S1068335623100020
 
 def retr_block(inp):
     out1,err1 = retrieving(img=crypt_values,real_img=inp, beta=1.)
