@@ -8,9 +8,15 @@
 #include <opencv2/core/ocl.hpp>
 #include <omp.h>
 
+#include "r250.h"
+
+/*
+R250 RNG forked from https://github.com/AdroitAnandAI/Parallel-RNG-using-GPU.git
+*/
+
 cv::Mat img_prep(const cv::Mat& image) {
     cv::Mat pixel_values(image.rows, image.cols, CV_32FC2);
-    cv::setNumThreads(8);
+    cv::setNumThreads(16);
     cv::parallel_for_(cv::Range(0, image.rows), [&](const cv::Range& range) {
         for (int i = range.start; i < range.end; ++i) {
             for (int j = 0; j < image.cols; ++j) {
@@ -40,16 +46,22 @@ void show_2_images(const cv::Mat& data1, const cv::Mat& data2, const std::string
 
 cv::Mat generate_random_complex_field(int width = 555, int height = 555) {
     cv::Mat rand_field(height, width, CV_32FC2);
+   
     std::random_device rd;
     std::mt19937 gen(rd());
-    std::uniform_real_distribution<float> amplitude_dist(0.0, 16777215.0);
-    std::uniform_real_distribution<float> phase_dist(0.0, 2.0 * M_PI);
-    cv::setNumThreads(8);
+    std::uniform_int_distribution<int> seed_dist(0, 65535);
+    int seed = seed_dist(gen);
+    r250_init(seed);
+//   std::uniform_real_distribution<float> amplitude_dist(0.0, 16777215.0);
+//   std::uniform_real_distribution<float> phase_dist(0.0, 2.0 * M_PI);
+    cv::setNumThreads(16);
     cv::parallel_for_(cv::Range(0, height), [&](const cv::Range& range) {
         for (int i = range.start; i < range.end; ++i) {
             for (int j = 0; j < width; ++j) {
-                float amplitude = amplitude_dist(gen);
-                float phase = phase_dist(gen);
+                //float amplitude = amplitude_dist(gen);
+                float amplitude = dr250() * 16777215.0f;
+                float phase = dr250() * 2.0f * static_cast<float>(M_PI);
+                //float phase = phase_dist(gen);
                 float real_part = amplitude * std::cos(phase);
                 float imaginary_part = amplitude * std::sin(phase);
                 rand_field.at<cv::Vec2f>(i, j) = cv::Vec2f(real_part, imaginary_part);
@@ -112,7 +124,6 @@ cv::Mat applyMaskToComplex(const cv::Mat& complexData, const cv::Mat& mask) {
 
     cv::Mat amplitude, phase;
     cv::cartToPolar(planes[0], planes[1], amplitude, phase);
-
     cv::Mat new_amplitude, new_phase;
     cv::multiply(amplitude, mask, new_amplitude);
     cv::multiply(phase, mask, new_phase);
@@ -163,6 +174,14 @@ std::pair<cv::Mat, float> retrieving(const cv::Mat& img, const cv::Mat& real_img
     return er_result;
 }
 
+/*
+This algorithm is taken from the work:
+Artyukov, I.A., Vinogradov, A.V., Gorbunkov, M.V. et al.
+Virtual Lens Method for Near-Field Phase Retrieval. 
+Bull. Lebedev Phys. Inst. 50, 414–419 (2023).
+https://doi.org/10.3103/S1068335623100020
+*/
+
 // retr_block
 std::pair<cv::Mat, float> retr_block(const cv::Mat& inp, int N, const cv::Mat& crypt_values, const cv::Mat& mask, const cv::Mat& antimask) {
     std::pair<cv::Mat, float> result1 = retrieving(crypt_values, inp, 1.0f, N, mask, antimask);
@@ -173,7 +192,6 @@ std::pair<cv::Mat, float> retr_block(const cv::Mat& inp, int N, const cv::Mat& c
 }
 
 int main() {
-
     cv::ocl::setUseOpenCL(true);
 
     std::string img_path = "crypt.jpg";
@@ -202,7 +220,8 @@ int main() {
 
     float error = 1.0f;
     cv::Mat field_1;
-    for (int j = 0; j < 5; ++j) {
+    //for (int j = 0; j < 5; ++j) {
+    while (error>0.0765){
         cv::Mat random_field = generate_random_complex_field();
 
         std::pair<cv::Mat, float> result = retr_block(random_field, 10, crypt_values, strict_mask, antimask);
@@ -210,33 +229,54 @@ int main() {
         error = result.second;
 
         for (int i = 0; i < 25; ++i) {
-            cv::Mat abs_random_field;
+            cv::Mat abs_field;
             cv::Mat plane[2];
             cv::split(field_1, plane); // plane[0] — Re, plane[1] — Im
-            cv::magnitude(plane[0], plane[1], abs_random_field);
+            cv::magnitude(plane[0], plane[1], abs_field);
             cv::Mat re_part, im_part;
-            cv::polarToCart(abs_random_field, cv::Mat::zeros(abs_random_field.size(), CV_32F), re_part, im_part);
-            cv::Mat new_abs_random_field;
-            cv::merge(std::vector<cv::Mat>{re_part, im_part}, new_abs_random_field);
-            std::pair<cv::Mat, float> new_result = retr_block(new_abs_random_field, 10, crypt_values, strict_mask, antimask);
+            cv::polarToCart(abs_field, cv::Mat::zeros(abs_field.size(), CV_32F), re_part, im_part);
+            cv::Mat new_abs_field;
+            cv::merge(std::vector<cv::Mat>{re_part, im_part}, new_abs_field);
+            std::pair<cv::Mat, float> new_result = retr_block(new_abs_field, 15, crypt_values, strict_mask, antimask);
+//            std::pair<cv::Mat, float> new_result = retr_block(field_1, 10, crypt_values, strict_mask, antimask);
             field_1 = new_result.first;
             error = new_result.second;
+            std::cout << i << "/25" << std::endl;
+            std::cout << "Error: " << error << std::endl;
         }
-
-        std::cout << "Error: " << error << std::endl;
+        std::pair<cv::Mat, float> new_result = retr_block(field_1, 200, crypt_values, strict_mask, antimask);
+        field_1 = new_result.first;
+        error = new_result.second;
+        std::cout << "Cycle Error: " << error << std::endl;
     }
 
     cv::Mat abs_field, phase_field;
+    cv::Mat abs_field1, phase_field1;
     cv::Mat planes[2];
+    cv::Mat planes1[2];
     cv::split(field_1, planes); // planes[0] — Re, planes[1] — Im
+    cv::split(field_1, planes1); // planes[0] — Re, planes[1] — Im
 
     cv::magnitude(planes[0], planes[1], abs_field);
     cv::phase(planes[0], planes[1], phase_field);
 
-    cv::normalize(abs_field, abs_field, 0, 255, cv::NORM_MINMAX, CV_8U);
-    cv::normalize(phase_field, phase_field, 0, 255, cv::NORM_MINMAX, CV_8U);
+    cv::magnitude(planes1[0], planes1[1], abs_field1);
+    cv::phase(planes1[0], planes1[1], phase_field1);
+
+    cv::normalize(abs_field, abs_field, 0, 65535, cv::NORM_MINMAX, CV_16U);
+    cv::normalize(phase_field, phase_field, 0, 65535, cv::NORM_MINMAX, CV_16U);
+
+    cv::normalize(abs_field1, abs_field1, 0, 255, cv::NORM_MINMAX, CV_8U);
+    cv::normalize(phase_field1, phase_field1, 0, 255, cv::NORM_MINMAX, CV_8U);
 
     show_2_images(abs_field, phase_field, "Modulo", "Phase");
 
+    show_2_images(abs_field1, phase_field1, "Modulo1", "Phase1");
+
+    cv::imwrite("modulo.jpg", abs_field);
+    cv::imwrite("phase.jpg", phase_field);
+
+    cv::imwrite("modulo1.jpg", abs_field1);
+    cv::imwrite("phase1.jpg", phase_field1);
     return 0;
 }
