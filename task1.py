@@ -53,8 +53,10 @@ def img_unprep(pixel_values):
     bw_image = Image.fromarray(scaled_values, mode='L')
     return bw_image
 
-center_square_start = (555 // 2) - (555 // 4)
-center_square_end = (555 // 2) + (555 // 4)
+#center_square_start = (555 // 2) - (555 // 4)
+#center_square_end = (555 // 2) + (555 // 4)
+center_square_start = 134
+center_square_end = 420
 
 STRICT_MASK = np.zeros((555, 555))
 STRICT_MASK[center_square_start:center_square_end, center_square_start:center_square_end] = 1.0
@@ -134,6 +136,11 @@ def retrieving(img, real_img, beta):
     #c_er = ER(10, target=c_hio, source=img)
     return [c_er,err]
 
+# This algorithm is taken from the work:
+# Artyukov, I.A., Vinogradov, A.V., Gorbunkov, M.V. et al.
+# Virtual Lens Method for Near-Field Phase Retrieval. 
+# Bull. Lebedev Phys. Inst. 50, 414–419 (2023)
+# https://doi.org/10.3103/S1068335623100020
 
 def retr_block(inp):
     out1,err1 = retrieving(img=crypt_values,real_img=inp, beta=1.)
@@ -164,7 +171,6 @@ def profile_func():
 cProfile.run('profile_func()', 'profile_stats')
 stats = pstats.Stats('profile_stats')
 stats.sort_stats('cumtime').print_stats(20)
-
 
 def process_image(_):
     if use_secrets:
