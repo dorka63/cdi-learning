@@ -51,13 +51,14 @@ crypt = crypt.rotate(90, expand=True)
 crypt_values = np.array(crypt)
 
 print("Type:", crypt_values.dtype)  #uint16
-noise=34
-# if value > noise, write value-nose, else write 0
-crypt_values = np.where(crypt_values > noise, crypt_values - noise, 0)
 
 # Check for correct reading
 print("Min value:", np.min(crypt_values))
 print("Max value:", np.max(crypt_values))
+
+noise=34
+# if value > noise, write value-nose, else write 0
+crypt_values = np.where(crypt_values > noise, crypt_values - noise, 0)
 
 #square root of intensity
 crypt_values=np.sqrt(crypt_values)
