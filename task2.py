@@ -15,7 +15,7 @@ except ImportError:
     use_secrets = False
 import matplotlib.animation as animation
 
-def show_2_images(data1, data2,title=" ", title1="Module", title2="Phase", cmap1='bone', cmap2='bone'):
+def show_2_images(data1, data2,title=" ", title1="Module", title2="Phase", cmap1=None, cmap2=None):
     if isinstance(data1, np.ndarray) and isinstance(data2, np.ndarray) and data1.shape == data2.shape:
         plt.figure(figsize=(12, 6))
         plt.suptitle(title)
@@ -46,42 +46,42 @@ def show_2_images(data1, data2,title=" ", title1="Module", title2="Phase", cmap1
 image_path = "1.tif"
 crypt = Image.open(image_path)
 
-Width, Height = crypt.size
+# Width must be 1030 height 1288
+crypt = crypt.rotate(90, expand=True)
+crypt_values = np.array(crypt)
 
-# Double precision
-crypt_values = np.array(crypt, dtype=np.float64)
-noise=34.0
-crypt_values=crypt_values-noise
-crypt_values = np.where(crypt_values <= 0.0, 0.0, crypt_values)
-
-crypt_values=np.sqrt(crypt_values)
+print("Type:", crypt_values.dtype)  #uint16
+noise=34
+# if value > noise, write value-nose, else write 0
+crypt_values = np.where(crypt_values > noise, crypt_values - noise, 0)
 
 # Check for correct reading
 print("Min value:", np.min(crypt_values))
 print("Max value:", np.max(crypt_values))
 
-# As in Wolfram document
-#crypt_values = np.flipud(crypt_values)
+#square root of intensity
+crypt_values=np.sqrt(crypt_values)
+crypt_values=crypt_values.astype(np.complex128)
+
+# Size check
+Height, Width= crypt_values.shape
+print("Width: ", Width, "Height: ", Height) #Width: 1030 Height: 1288
 
 #######################################
 
 
 ### MASK CREATION ###
 
-#mask_width = 384  
-#mask_height = 367
+mask_width = 384
+mask_height = 367
 
-mask_width = 367  
-mask_height = 384
-
-
-horizontal_offset = 17  # смещение вправо
+offset = 17
 Mask = np.zeros((Height, Width), dtype=np.float64)
 
-center_x = Width // 2
+center_x = Width // 2-offset
 center_y = Height // 2
 
-start_x = center_x - (mask_width // 2) - horizontal_offset
+start_x = center_x - (mask_width // 2)
 start_y = center_y - (mask_height // 2)
 
 Mask[start_y:start_y + mask_height, start_x:start_x + mask_width] = 1.0
@@ -92,23 +92,25 @@ Antimask = 1.0 - Mask
 
 ### EXPERIMENTAL VALUES AND VIRTUAL LENS ###
 
-Z=60*10/0.006 #cm->mm
-Lambda=633*1e-6/0.006 #nm->mm
-K=2*np.pi/Lambda
-dx=1. #0.006 #mm
+Z=60*10 #cm->mm
+Lambda=632.8/1e6 #nm->mm
+K=2.*np.pi/Lambda
+dx=0.006 #mm
 
-crypt_values=crypt_values*Z/(2*np.pi*K)
+#Formula (9)
+crypt_values=crypt_values*Z/(2.*np.pi*K)
 
-x_grid = (np.arange(Width) - (Width - 1) // 2-horizontal_offset) * dx
+x_grid = (np.arange(Width) - (Width - 1) // 2) * dx
 y_grid = (np.arange(Height) - (Height - 1) // 2) * dx
 
 X, Y = np.meshgrid(x_grid, y_grid)
-r_squared = X**2 + Y**2  
+r_squared = X**2 + Y**2
 r_squared=cp.asarray(r_squared)
-Exp_ph=cp.exp(1j*K*r_squared/(2*Z))
+# phase
+Exp_ph=K*r_squared/(2*Z)
 
-Exp_ph_cc=cp.exp(-1j*K*r_squared/(2*Z))
-#show_2_images(np.abs(np.fft.ifft2(crypt_values)),np.angle(np.fft.ifft2(crypt_values)))
+# Uncomment it to show exp(ik\rho^2/(2z)) and (k\rho^2/(2z))
+#show_2_images(cp.asnumpy(cp.angle(cp.exp(1j*Exp_ph))),cp.asnumpy(Exp_ph))
 ################################
 
 
@@ -130,11 +132,10 @@ def generate_secret_random_complex_field(width=Width, height=Height):
     phases = np.empty((height, width))
     for i in prange(height):
         for j in range(width):
-            amplitudes[i,j] = secrets.randbelow(1023)
-            phases[i,j] = 0.0#secrets.randbits(64) / 2**64 * 2 * np.pi
+            amplitudes[i, j] = secrets.randbelow(1023)
+            phases[i, j] = secrets.randbits(64) / 2**64 * 2 * np.pi
     rand_field = amplitudes * np.exp(1j * phases)
     return rand_field
-
 ######################
 
 ### FFT&IFFT ###
@@ -151,11 +152,17 @@ def IFT(data):
 
 ### PROJECTOR ###
 def steps(X_inp, X_source):
-  X_inp=cp.asarray(X_inp)*Exp_ph
-  #X_inp=cp.asarray(X_inp)
-  X_inp=IFT(cp.asarray(X_source) * cp.exp(1j * cp.angle(FT(X_inp))))
-  X_inp=X_inp*Exp_ph_cc
-  return cp.asnumpy(X_inp)
+  X_1=cp.asarray(X_inp)
+  #virtual lens
+  X_inp_phase=cp.angle(X_1)+Exp_ph
+  X_1=cp.abs(X_1)*cp.exp(1j*X_inp_phase)
+
+  X_1=IFT(cp.asarray(X_source) * cp.exp(1j * cp.angle(FT(X_1))))
+
+  #backward
+  X_inp_phase=cp.angle(X_1)-Exp_ph
+  X_1=cp.abs(X_1)*cp.exp(1j*X_inp_phase)
+  return cp.asnumpy(X_1)
 
 def apply_mask2field(mask,field):
   mask=cp.asarray(mask)
@@ -189,11 +196,11 @@ def HIO(N_iter: int, beta: float, Target, Source):
 ###########
 
 #from the task (30 HIO +10 ER)
-def retrieving(img, real_img, beta):
+def retrieving(img, real_img, beta,N):
     #real_img is the r-domain field for the HIO's 0th iteration, img --- "true" reciporal magnitude
     c_hio = HIO(N_iter=30, beta=beta, Target=real_img, Source=img)
     #got a c_hio field (in r-domain), now put it into 0th iteration for ER
-    c_er,err = ER(10, target=c_hio, source=img)
+    c_er,err = ER(N, target=c_hio, source=img)
     return [c_er,err]
 
 ############################################################
@@ -204,11 +211,11 @@ def retrieving(img, real_img, beta):
 # https://doi.org/10.3103/S1068335623100020                #
 ############################################################
 
-def retr_block(inp):
-    out1,err1 = retrieving(img=crypt_values,real_img=inp, beta=1.)
-    out2,err2 = retrieving(img=crypt_values,real_img=out1,beta=0.7)
-    out3,err3 = retrieving(img=crypt_values,real_img=out2,beta=0.4)
-    out4,err4 = retrieving(img=crypt_values,real_img=out3,beta=0.1)
+def retr_block(inp,N=10):
+    out1,err1 = retrieving(img=crypt_values,real_img=inp, beta=1.,N=N)
+    out2,err2 = retrieving(img=crypt_values,real_img=out1,beta=0.7,N=N)
+    out3,err3 = retrieving(img=crypt_values,real_img=out2,beta=0.4,N=N)
+    out4,err4 = retrieving(img=crypt_values,real_img=out3,beta=0.1,N=N)
     return [out4,err4]
 
 for i in range(100):
@@ -216,13 +223,14 @@ for i in range(100):
       random_field = generate_secret_random_complex_field()
   else:
       random_field = generate_random_complex_field()
-  #show_2_images(np.abs(random_field*cp.asnumpy(Exp_ph)),np.angle(random_field*cp.asnumpy(Exp_ph)))
+  #print(random_field.shape)
+  #show_2_images(np.abs(random_field),np.angle(random_field))
   field_1, error = retr_block(inp=random_field)
-  for i in range (20):
+# According to the article: 8 blocks (30 HIO 10 ER) + 1 block (30 HIO 200 ER)
+  for i in range (8):
     field_1, error = retr_block(inp=np.abs(field_1))
-    #print(error)
-  #field_1, error = ER(200,target=np.abs(field_1),source=crypt_values)
-    show_2_images(data1=np.abs(field_1),data2=np.angle(field_1),title=f"Error:{error:.4f}")
+  field_1,error=retr_block(inp=np.abs(field_1),N=200)
+  show_2_images(data1=np.abs(field_1),data2=np.angle(field_1),title=f"Error:{error:.4f}")
 
 ### Profiling ###
 '''
@@ -276,4 +284,3 @@ ani = animation.FuncAnimation(fig, update, frames=150, interval=200, blit=False)
 
 ani.save('ani.mp4', writer='ffmpeg')
 '''
-
