@@ -17,7 +17,7 @@ This repository was created to study how CDI (Coherent Diffraction Imaging) algo
 This repository contains three versions of the code for phase retrieval in the far zone:
 - **GPU Version**: `task1_GPU.py` — Implements the phase-retrieval algorithm using GPU acceleration. Requires a GPU and the `cupy` library.
 - **CPU Version**: `task1.py` — Implements the phase-retrieval algorithm using CPU. Requires `numpy` and other standard libraries.
-- **C++ Version**: `test-opencv.cpp` — Implements the phase-retrieval algorithm in C++. Requires the OpenCV package and uses the R50 random number generator (forked from [Parallel-RNG-using-GPU](https://github.com/AdroitAnandAI/Parallel-RNG-using-GPU)).
+- **C++ Version**: `test-opencv.cpp` — Implements the phase-retrieval algorithm in C++. Requires the OpenCV package and uses the R250 random number generator (forked from [Parallel-RNG-using-GPU](https://github.com/AdroitAnandAI/Parallel-RNG-using-GPU)).
   
 ## Acknowledgements
 This project is based on the following research papers:
