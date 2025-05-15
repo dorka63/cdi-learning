@@ -90,218 +90,291 @@ def show_2_images(data1, data2, **kwargs):
     plt.tight_layout()
     plt.show()
 
-### IMAGE PREPARATION ###
+@dataclass
+class ExperimentalConf:
+    z_um: float = 6e5
+    lambda_um: float = 0.6328
+    noise_threshold: int = 34
+    detector_width_um: float = 0.618 * 1e4
+    detector_height_um: float = 0.7728 * 1e4
+    mask_width_um: float = 2.2 * 1e3
+    mask_height_um: float = 2.3 * 1e3
+    mask_x_offset_um: float = 0.0
+    mask_y_offset_um: float = 6*17
+    rotation_angle: int = 90
+    image_path: str = '1.tif'
 
-image_path = "1.tif"
-crypt = Image.open(image_path)
+    _cached_properties: Dict[str, Any] = None
 
-# Width must be 1030 height 1288
-crypt = crypt.rotate(90, expand=True)
-crypt_array = np.array(crypt)
-crypt_array = np.flipud(crypt_array)
-print("Type:", crypt_array.dtype)  #uint16
+    def __post_init__(self):
+        self._cached_properties = {}
 
-noise=34
-# if value > noise, write value-nose, else write 0
-crypt_values = np.where(crypt_array < noise, 0, crypt_array-noise)
+    def _get_or_compute(self, key: str, compute_func):
+        if key not in self._cached_properties:
+            self._cached_properties[key] = compute_func()
+        return self._cached_properties[key]
 
-#square root of intensity
-crypt_values=np.sqrt(crypt_values)
-crypt_values=crypt_values.astype(np.complex128)
+    @property
+    def image_size(self) -> Tuple[int, int]:
+        return self._get_or_compute('image_size', lambda: (
+            (lambda img: (img.width,img.height) if self.rotation_angle in (90, 270) else (img.height,img.width))(
+                Image.open(self.image_path)
+            )))
 
-# Check for correct noise removal
-print("Min value:", np.min(crypt_values))
-print("Max value:", np.max(crypt_values))
+    @property
+    def pixel_size(self) -> Tuple[float, float]:
+        """Returns (dx, dy) in um/px"""
+        return self._get_or_compute('pixel_size', lambda: (
+            self.detector_height_um / self.image_size[0],
+            self.detector_width_um / self.image_size[1]
+        ))
 
-# Size check
-Height, Width= crypt_values.shape
-print("Width: ", Width, "Height: ", Height) #Width: 1030 Height: 1288
+    @property
+    def mask_offset(self) -> Tuple[int, int]:
+        """Returns (offset_x_px, offset_y_px) in px"""
+        dy, dx = self.pixel_size
+        return (
+            int(self.mask_x_offset_um / dx),
+            int(self.mask_y_offset_um / dy)
+        )
 
-#######################################
+    @property
+    def scale_factors(self) -> Tuple[float, float]:
+        """Scaling for affine_transform"""
+        dx, dy = self.pixel_size
+        return (
+            (self.lambda_um * self.z_um) / (self.detector_width_um * dx),
+            (self.lambda_um * self.z_um) / (self.detector_height_um * dy)
+        )
 
-### EXPERIMENTAL VALUES ###
+class ImageProcessor:
+    def __init__(self, config: ExperimentalConf):
+        self.config = config
+        self.k = 2 * np.pi / self.config.lambda_um
 
-Z=60*10*1000 #um
-Lambda=632.8/1e3 #nm->um
-K=2.*np.pi/Lambda
-
-mask_width_um = 2.3 * 1000  # 2300 um
-mask_height_um = 2.2 * 1000  # 2200 um
-
-# detector size (в um)
-det_width_um = 0.618 * 10 * 1000  # 6180 um
-det_height_um = 0.7728 * 10 * 1000  # 7728 um
-
-# grid step (um/px)
-dx = det_width_um / Width
-dy = det_height_um / Height
-
-#######################################
-
-### MASK CREATION ###
-
-mask_width = int(mask_width_um /dx) #px
-mask_height = int(mask_height_um /dy) #px
-
-offset = 17 #px
-Mask = np.zeros((Height, Width), dtype=np.float64)
-
-center_x = Width // 2
-center_y = Height // 2-offset
-
-start_x = center_x - (mask_width // 2)
-start_y = center_y - (mask_height // 2)
-
-Mask[start_y:start_y + mask_height, start_x:start_x + mask_width] = 1.0
-Antimask = 1.0 - Mask
-
-#######################################
-
-### VIRTUAL LENS ###
-
-#Formula (9)
-#crypt_values=crypt_values*Z/(2.*np.pi*K)
-#show_2_images(np.abs(crypt_values),np.angle(crypt_values))
-
-x_grid = (np.arange(Width) - (Width // 2)) * dx
-y_grid = (np.arange(Height) - (Height // 2)+offset) * dy
-X, Y = np.meshgrid(x_grid, y_grid)
-r_squared = X**2 + Y**2
-r_squared=cp.asarray(r_squared)
-
-Exp_ph=cp.exp(1j*K*r_squared/(2*Z))
-Exp_ph_c=cp.exp(-1j*K*r_squared/(2*Z))
+    def load_and_preprocess(self,scale_flag:bool=True) -> cp.ndarray:
+        img = np.flipud(np.array(
+            Image.open(self.config.image_path).rotate(self.config.rotation_angle, expand=True)
+        ))
+        clean = np.where(img < self.config.noise_threshold, 0, img - self.config.noise_threshold)
+        if scale_flag:
+          return cp.asarray(np.sqrt(clean) * self.config.z_um / (2 * np.pi * self.k))
+        else:
+          return cp.asarray(np.sqrt(clean))
 
 
-#show_2_images(cp.asnumpy(cp.angle(Exp_ph_c)),cp.asnumpy(cp.angle(Exp_ph)))
-
-def affine_scale(img, kx, ky,d=offset):
-    h, w = img.shape
-    # Матрица масштабирования (учитывает центр изображения)
-    matrix = cp.array([[ky, 0], [0, kx]])
-    offset = cp.array([h, w]) * (1 - cp.array([ky, kx])) // 2-cp.array([d,0])
-    return cndimage.affine_transform(img, matrix, offset=offset,order=5, output_shape=(h, w))
-
-A_x, A_y = (Lambda*Z)/(det_width_um*dx),(Lambda*Z)/(det_height_um*dy)
-crypt_values=affine_scale(cp.asarray(crypt_values),A_x,A_y)
-################################
-
-### RANDOM FIELD ###
-
-def generate_random_complex_field(height=Height,width=Width):
-    #height,width=Size
-    rand_field = np.empty((height, width), dtype=np.complex64)
-    amplitudes = np.empty((height, width))
-    phases = np.empty((height, width))
-    for i in prange(height):
-        for j in range(width):
-            amplitudes[i,j] = secrets.randbits(32) / 2**32
-            phases[i,j] = secrets.randbits(32) / 2**32 * 2 * np.pi
-    rand_field = amplitudes * np.exp(1j * phases)
-    return rand_field
-
-### FFT&IFFT ###
-
-def FT(data):
-    data_gpu = cp.asarray(data)
-    data_gpu = cp.fft.ifftshift(data_gpu)
-    result_gpu = cp.fft.fft2(data_gpu)
-    result_gpu = cp.fft.fftshift(result_gpu)
-    return result_gpu
-
-def IFT(data):
-    data_gpu = cp.asarray(data)
-    data_gpu = cp.fft.ifftshift(data_gpu)
-    result_gpu = cp.fft.ifft2(data_gpu)
-    result_gpu = cp.fft.fftshift(result_gpu)
-    return result_gpu
-
-#######################################
+    def generate_random_complex_field(self) ->cp.ndarray:
+        height,width=self.config.image_size
+        rand_field = np.empty((height, width), dtype=np.complex64)
+        amplitudes = np.empty((height, width))
+        phases = np.empty((height, width))
+        for i in prange(height):
+            for j in range(width):
+                amplitudes[i,j] = secrets.randbits(32) / 2**32
+                phases[i,j] = secrets.randbits(32) / 2**32 * 2 * np.pi
+        rand_field = amplitudes * np.exp(1j * phases)
+        return cp.asarray(rand_field)
 
 
-def prop(field, z):
-    field_1 = FT(field)
-    field_1 = cp.fft.ifftshift(field_1)
-    n, m = field_1.shape
-    fx = cp.fft.fftfreq(n)
-    fy = cp.fft.fftfreq(m)
-    px, py = cp.meshgrid(fx, fy, indexing='ij')
-    p_squared = px**2 + py**2
-    field_1 = field_1 * cp.exp(1j * z * cp.sqrt(K**2 - p_squared))
-    field_1 = cp.fft.ifftshift(field_1)
-    field_1=IFT(field_1)
-    return field_1
+    def create_mask(self) -> cp.ndarray:
+        height, width = self.config.image_size
+        dx, dy = self.config.pixel_size
+        offset_px, offset_py = self.config.mask_offset
 
-crypt_values=crypt_values*Z/(2.*np.pi*K)
-#show_2_images(np.abs(cp.asnumpy(prop_det)),np.angle(cp.asnumpy(prop_det)))
+        mask = cp.zeros((height, width), dtype=cp.float64)
+        mask_width_px = int(self.config.mask_width_um / dx)
+        mask_height_px = int(self.config.mask_height_um / dy)
 
-### PROJECTOR ###
+        start_x = (width // 2 - offset_px) - (mask_width_px // 2)
+        start_y = (height // 2 - offset_py) - (mask_height_px // 2)
 
-def steps(Detector, Num_field,virt_lens:bool=True):
-  X_1=cp.asarray(Num_field)
-  if virt_lens:
-    X_2=FT(X_1*Exp_ph)
+        mask[start_y:start_y+mask_height_px, start_x:start_x+mask_width_px] = 1.0
+        return mask
+
+    def create_phase_exp(self) ->cp.ndarray:
+        height, width = self.config.image_size
+        dx, dy = self.config.pixel_size
+        offset_px, offset_py = self.config.mask_offset
+
+        x = (cp.arange(width) - (width//2 - offset_px)) * dx
+        y = (cp.arange(height) - (height//2 - offset_py)) * dy
+        X, Y = cp.meshgrid(x, y)
+        r_sq = X**2 + Y**2
+
+        phase = 1j * self.k * r_sq / (2 * self.config.z_um)
+        return cp.exp(phase)
+
+    def apply_affine_scale(self) -> cp.ndarray:
+      kx, ky = self.config.scale_factors
+      img = self.load_and_preprocess(scale_flag=True)
+      h, w = img.shape
+
+      offset_px, offset_py = self.config.mask_offset
+
+      matrix = cp.array([[ky, 0], [0, kx]])
+      offset = cp.array([h, w]) * (1 - cp.array([ky, kx])) // 2-cp.array([offset_py,offset_px])
+
+      return cndimage.affine_transform(img,matrix,offset=offset,order=5,output_shape=(h, w))
+
+class PhaseRetriever(ImageProcessor):
+    def __init__(self, config: ExperimentalConf):
+        super().__init__(config)
+        self._phase_exp = self.create_phase_exp()
+        self.mask = self.create_mask()
+        self.flag_prop=False
+
+    @property
+    def phase_exp(self) -> cp.ndarray:
+        return self._phase_exp
+
+    def ft(self, data: np.ndarray) -> cp.ndarray:
+        data_gpu = cp.asarray(data, dtype=np.complex64)
+        return cp.fft.fftshift(cp.fft.fft2(cp.fft.ifftshift(data_gpu)))
+
+    def ift(self, data: np.ndarray) -> cp.ndarray:
+        data_gpu = cp.asarray(data, dtype=np.complex64)
+        return cp.fft.fftshift(cp.fft.ifft2(cp.fft.ifftshift(data_gpu)))
+
+
+    def prop(self, field:np.ndarray,Z:float) ->cp.ndarray:
+        field_1 = self.ft(field)
+        field_1 = cp.fft.ifftshift(field_1)
+        n, m = field_1.shape
+        fx = cp.fft.fftfreq(n)
+        fy = cp.fft.fftfreq(m)
+        px, py = cp.meshgrid(fx, fy, indexing='ij')
+        p_squared = px**2 + py**2  # Squared magnitude of spatial frequencies
+        field_1 = field_1 * cp.exp(1j * Z * cp.sqrt(self.k**2 - p_squared))
+        field_1 = cp.fft.ifftshift(field_1)
+        field_1=self.ift(field_1)
+        return field_1
+
+    def step(self, field: cp.ndarray, detector: np.ndarray) -> cp.ndarray:
+        X_1=cp.asarray(field)
+        flag_prop=self.flag_prop
+        if flag_prop:
+          X_2=self.prop(cp.asnumpy(X_1),Z=self.config.z_um)
+        else:
+          X_2=self.ft(X_1*self.phase_exp)
+        #X_2=X_2/cp.max(X_2)
+        X_3=cp.asarray(detector)*X_2/cp.abs(X_2)
+        if flag_prop:
+          X_4=self.prop(X_3,Z=-self.config.z_um)
+        else:
+          X_4=self.ift(X_3)/self.phase_exp
+        X_out=X_4#/cp.max(X_4)
+        return X_out
+
+    def ER(self,n_iter: int, field: cp.ndarray, detector: np.ndarray) -> Tuple[cp.ndarray, float]:
+        """Error Reduction"""
+        field_1 = cp.asarray(field)
+
+        for _ in range(n_iter):
+            d = self.step(field_1,detector)
+            field_1 = self.mask*d
+
+        d_norm = cp.linalg.norm(d)
+        a_norm = cp.linalg.norm(field_1)
+        error = cp.sqrt(d_norm**2 - a_norm**2) / d_norm
+
+        return cp.asnumpy(field_1), float(error)
+
+
+    def HIO(self, n_iter: int, field: cp.ndarray, detector: np.ndarray, beta: float) -> cp.ndarray:
+        """Hybrid Input-Output"""
+        field_1 = cp.asarray(field)
+
+        for _ in range(n_iter):
+            d = self.step(field_1,detector)
+            field_1 = self.mask*d +(field_1 - beta * d)*(1.0-self.mask)
+
+        return cp.asnumpy(field_1)
+
+    def retrieving(self,DET:np.ndarray, FLD:np.ndarray, beta:float,hio_iters: int = 30, er_iters: int = 10)->Tuple[np.ndarray, float]:
+        # FLD is the r-domain field for the HIO's 0th iteration, DET --- detector's magnitude
+        c_hio = self.HIO(n_iter=hio_iters, beta=beta, field=FLD, detector=DET)
+        # c_hio field (in r-domain), now put it into 0th iteration for ER
+        c_er,err = self.ER(n_iter=er_iters, field=c_hio, detector=DET)
+        return [c_er,err]
+
+    def retr_block(self, detector: np.ndarray, initial_field: np.ndarray,
+                hio_iters: int = 30, er_iters: int = 10,betas:List=[0.7,0.4,0.1]) -> Tuple[np.ndarray, float]:
+        """
+        Phase retrival cycle
+
+        ############################################################
+        # This algorithm is taken from the work:                   #
+        # Artyukov, I.A., Vinogradov, A.V., Gorbunkov, M.V. et al. #
+        # Virtual Lens Method for Near-Field Phase Retrieval.      #
+        # Bull. Lebedev Phys. Inst. 50, 414–419 (2023).            #
+        # https://doi.org/10.3103/S1068335623100020                #
+        ############################################################
+
+        Params:
+            detector: Detector's image [numpy array]
+            initial_field: Initial field (firstly, random) [numpy array]
+            hio_iters: Number of HIO's iterations for each beta value
+            er_iters: Number of ER's iterations for each beta value
+
+        Returns:
+            Retrieved field and error
+        """
+        current_field = cp.asarray(initial_field)
+        error = 0.
+        current_field,error = self.retrieving(DET=detector,FLD=current_field,beta=1.0)
+        for beta in betas:
+          current_field,error=self.retrieving(DET=detector,FLD=(current_field),beta=beta)
+        return cp.asnumpy(current_field), error
+
+
+letter_F_config = ExperimentalConf(image_path="1.tif")
+F_processor = ImageProcessor(letter_F_config)
+
+#CHECK#
+print("Type (must be uint16):", np.asarray(Image.open(letter_F_config.image_path)).dtype)
+print("Image size [Height, Width] (px):", F_processor.config.image_size)  #Height 1288, Width 1030
+print("Pixel size (um):", F_processor.config.pixel_size)
+print("Mask offset (px):", F_processor.config.mask_offset)
+print(letter_F_config.scale_factors)
+
+F_mask=F_processor.create_mask()
+detector_F_data_wp=F_processor.load_and_preprocess(scale_flag=False)
+detector_F_data_vl=F_processor.apply_affine_scale()
+show_2_images(cp.asnumpy(detector_F_data_vl),cp.asnumpy(detector_F_data_wp),title1="Scaled image from the detector",title2="Image from the detector")
+VL_F=PhaseRetriever(letter_F_config)
+WP_F=PhaseRetriever(letter_F_config)
+WP_F.flag_prop=True
+initial_field = F_mask*F_processor.generate_random_complex_field()
+
+#show_2_images(np.abs(cp.asnumpy(initial_field)),np.angle(cp.asnumpy(initial_field)))
+
+def MAINFUNC(vl:bool=True,show:bool=True):
+  if vl:
+    retrieved=VL_F
+    det_dat=detector_F_data_vl
   else:
-    X_2=prop(X_1,Z)
-  #X_2=X_2/cp.max(X_2)
-  X_3=cp.asarray(Detector)*X_2/cp.abs(X_2)
-  if virt_lens:
-    X_4=IFT(X_3)/Exp_ph
-  else:
-    X_4=prop(X_3,-Z)
-  X_out=X_4#/cp.max(X_4)
-  return X_out
+    retrieved=WP_F
+    det_dat=detector_F_data_wp
+  frames = []
+  result, errors = retrieved.retr_block(
+      detector=det_dat,
+      initial_field=np.abs(initial_field))
+  for i in range(10):
+    result, errors = retrieved.retr_block(
+    detector=det_dat,
+    initial_field=np.abs(result*cp.asnumpy(F_mask)),er_iters=10)
+    if show:
+      show_2_images(np.abs(cp.asnumpy(result)),np.angle(cp.asnumpy(result)),suptitle=f"Error:{errors:.4f}")
 
-def apply_mask2field(msk,fld):
-  mask=cp.asarray(msk)
-  field=cp.asarray(fld)
-  return (mask*field)
-
-#######################################
-
-### ER ###
-def ER(N_iter: int, field, detector):
-    A =field  # 0th iteration --- random field distribution or the previous result
-    for i in range(N_iter):
-        D = steps(Detector=detector,Num_field=A)
-        A=apply_mask2field(msk=Mask,fld=D)
-    D_norm = cp.linalg.norm(D)
-    A_norm = cp.linalg.norm(A)
-    Error = cp.sqrt(D_norm**2 - A_norm**2) / D_norm
-    return [A, Error]
-##########
-
-### HIO ###
-def HIO(N_iter: int, beta: float, field, detector):
-    A = cp.asarray(field)  # 0th iteration --- random field distribution or the previous result
-    for i in range(N_iter):
-        D = steps(Detector=detector,Num_field=A)
-        A = apply_mask2field(msk=Mask,fld=D) + apply_mask2field(msk=Antimask, fld=(A - beta * D))  # r-domain
-    return A
-###########
-
-def retrieving(DET, FLD, beta,N):
-    # FLD is the r-domain field for the HIO's 0th iteration, DET --- detector's magnitude
-    c_hio = HIO(N_iter=30, beta=beta, field=FLD, detector=DET)
-    # c_hio field (in r-domain), now put it into 0th iteration for ER
-    c_er,err = ER(N_iter=N, field=c_hio, detector=DET)
-    return [c_er,err]
+  result, errors = retrieved.retr_block(
+  detector=det_dat,
+  initial_field=np.abs(result*cp.asnumpy(F_mask)),er_iters=200)
+  if show:
+    show_2_images(np.abs(cp.asnumpy(result)),np.angle(cp.asnumpy(result)),suptitle=f"Error:{errors:.4f}")
 
 
-def retr_block(input_field,det=crypt_values,N=10):
-    out1,err1 = retrieving(DET=det,FLD=input_field, beta=1.,N=N)
-    out2,err2 = retrieving(DET=det,FLD=cp.abs(out1),beta=0.7,N=N)
-    out3,err3 = retrieving(DET=det,FLD=cp.abs(out2),beta=0.4,N=N)
-    out4,err4 = retrieving(DET=det,FLD=cp.abs(out3),beta=0.1,N=N)
-    return [out4,err4]
+MAINFUNC(vl=False,show=True)
 
-error=1.0
-while error>=0.054:
-  random_field = generate_random_complex_field()
-
-  field_1, error = retr_block(np.abs(random_field*Mask))
-  for i in range (10):
-    field_1, error = retr_block(field_1*cp.asarray(Mask),N=100)
-    show_2_images(data1=np.abs(cp.asnumpy(field_1)),data2=np.angle(cp.asnumpy(field_1)),suptitle=f"Error:{error:.4f}")
-  field_1, error = retr_block(field_1,N=200)
-  show_2_images(data1=np.abs(cp.asnumpy(field_1)),data2=np.angle(cp.asnumpy(field_1)),suptitle=f"Error:{error:.4f}")
+cProfile.run('MAINFUNC(vl=False,show=False)','profile_stats')
+stats = pstats.Stats('profile_stats')
+stats.sort_stats('cumtime').print_stats(20)
